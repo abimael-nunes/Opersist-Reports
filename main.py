@@ -2,7 +2,7 @@
 import datetime
 import firebase_admin
 from firebase_admin import firestore, credentials
-from google.cloud.firestore_v1.base_query import FieldFilter, Or
+from google.cloud.firestore_v1.base_query import FieldFilter, And
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -27,6 +27,12 @@ def obter_hora():
   return hora_formatada
 
 # %%
+entradas = {
+    'contrato': 20041754,
+    'periodos': ['2406','2407','2408']
+}
+
+# %%
 # Use a service account.
 cred = credentials.Certificate('serviceAccountKey.json')
 
@@ -35,24 +41,48 @@ firebase_admin.initialize_app(cred)     # Caso não funcione, inicializar o app 
 db = firestore.client()
 
 # Note: Use of CollectionRef stream() is prefered to get()
-docs = (
-    db.collection("dbAusencias")
-    .where(filter=FieldFilter("ocPeriodo", "==", "2405"))
-    .stream()
-)
+def obter_documentos(periodo, contrato):
+    docs = (
+        db.collection("dbAusencias")
+        .where(filter=FieldFilter("ocPeriodo", "==", periodo))
+        .where(filter=FieldFilter("contrato", "==", contrato))
+        .stream()
+    )
+    # Criando uma lista para armazenar os dados
+    data = []
+
+    # Iterando sobre os documentos e adicionando os dados à lista
+    for doc in docs:
+        data.append(doc.to_dict())
+
+    return(data)
 
 # %%
-# Criando uma lista para armazenar os dados
-data = []
+# Fazer uma requisição para cada período solicitado
+documentos = []
 
-# Iterando sobre os documentos e adicionando os dados à lista
-for doc in docs:
-    data.append(doc.to_dict())
+for item in entradas['periodos']:
+    documentos = documentos + obter_documentos(periodo=item, contrato=entradas['contrato'])
 
+# %%
+print(documentos)
+
+# %%
 # Criando o DataFrame
-df = pd.DataFrame(data)
+df = pd.DataFrame(documentos)
 
 # %%
+display(df)
+
+# %%
+# TRATAMENTO DOS DADOS
+
+# Preenchendo valores vazios na coluna 'funcUni'
+df['funcUni'] = df['funcUni'].str.strip()
+df['funcUni'] = df['funcUni'].fillna('NÃO INFORMADO')
+df['funcUni'] = df['funcUni'].replace('', 'NÃO INFORMADO')
+df['funcUni'] = df['funcUni'].replace(' ', 'NÃO INFORMADO')
+
 # Convertendo 'ocPeriodo' para um formato mais legível (opcional)
 df['Periodo'] = pd.to_datetime(df['ocPeriodo'], format='%y%m').dt.strftime('%m-%Y')
 
@@ -69,21 +99,33 @@ ocorrencias_por_empresa = df.groupby('funcEmp').size().reset_index(name='Total d
 ocorrencias_por_unidade = df.groupby('funcUni').size().reset_index(name='Total de Ocorrências')
 
 # %%
+# Obter todas as unidades
+unidades = df['funcUni'].unique()
 # Obter quantidade de cada ocorrência por unidade
-unidades = df['ocTipo'].unique()
-dados_tabela = {}
+qtd_tipo_unidade = {}
 
-for unidade in unidades:
-    qtd_abandono = 0
-    qtd_atraso_aj = 0
-    qtd_atraso_i = 0
-    qtd_falta_aj = 0
-    qtd_falta_i = 0
-    qtd_saida = 0
-    print(unidade)
+for item in unidades:
+    qtd_tipo_unidade[item] = {
+        'Abandono de posto': 0,
+        'Atraso (Atestado/Justificado)': 0,
+        'Atraso (Injustificado)': 0,
+        'Falta (Atestada/Justificada)': 0,
+        'Falta (Injustificada)': 0,
+        'Saída antecipada': 0
+    }
 
-# %%
-print(ocorrencias_por_unidade)
+for index, row in df.iterrows():
+    tipo = row['ocTipo']
+    unidade = row['funcUni']
+
+    if unidade in qtd_tipo_unidade:
+        if tipo in qtd_tipo_unidade[unidade]:
+            valor_atual = qtd_tipo_unidade[unidade][tipo]
+            qtd_tipo_unidade[unidade][tipo] = valor_atual + 1
+        else:
+            qtd_tipo_unidade[unidade][tipo] =  1
+    else:
+        qtd_tipo_unidade[unidade] = {tipo: 1}
 
 # %%
 # Gráfico de barras por período
@@ -122,8 +164,10 @@ pdf.cell(90, 8, txt="OCORRÊNCIAS OPERACIONAIS", align='C')
 pdf.set_font("Arial", size=8)
 pdf.cell(50, 8, txt="{}".format(obter_data_formatada()), align='R', ln=1)
 pdf.cell(50, 8, txt="", align='C')
-pdf.cell(90, 8, txt="Maio/24", align='C')
-pdf.cell(50, 8, txt="{}".format(obter_hora()), align='R')
+pdf.cell(90, 8, txt="Junho/24 - Agosto/24", align='C')
+pdf.cell(50, 8, txt="{}".format(obter_hora()), align='R', ln=1)
+pdf.set_fill_color(0, 0, 0)
+pdf.cell(190, 2, border=1, align='C', fill=True, ln=1)
 pdf.cell(200, 115, txt="", ln=1, align='C')
 
 # Adicionando o gráfico de barras
@@ -161,17 +205,17 @@ pdf.cell(20, 7, txt="Saída Ant.", border=1, align='C', fill=True)
 pdf.cell(20, 7, txt="Total", border=1, ln=1, fill=True, align='C')
 pdf.set_text_color(0, 0, 0)
 for index, row in ocorrencias_por_unidade.iterrows():
+    pdf.set_font("Arial", "B", size=8)
     pdf.cell(50, 5, txt=str(row['funcUni']), border=1)
-    pdf.cell(20, 5, txt="")
-    pdf.cell(20, 5, txt="")
-    pdf.cell(20, 5, txt="")
-    pdf.cell(20, 5, txt="")
-    pdf.cell(20, 5, txt="")
-    pdf.cell(20, 5, txt="")
+    pdf.set_font("Arial", size=8)
+    pdf.cell(20, 5, txt=str(qtd_tipo_unidade[row['funcUni']]['Abandono de posto']), align='C', border=1)
+    pdf.cell(20, 5, txt=str(qtd_tipo_unidade[row['funcUni']]['Atraso (Atestado/Justificado)']), align='C', border=1)
+    pdf.cell(20, 5, txt=str(qtd_tipo_unidade[row['funcUni']]['Atraso (Injustificado)']), align='C', border=1)
+    pdf.cell(20, 5, txt=str(qtd_tipo_unidade[row['funcUni']]['Falta (Atestada/Justificada)']), align='C', border=1)
+    pdf.cell(20, 5, txt=str(qtd_tipo_unidade[row['funcUni']]['Falta (Injustificada)']), align='C', border=1)
+    pdf.cell(20, 5, txt=str(qtd_tipo_unidade[row['funcUni']]['Saída antecipada']), align='C', border=1)
+    pdf.set_font("Arial", "B", size=8)
     pdf.cell(20, 5, txt=str(row['Total de Ocorrências']), border=1, ln=1, align='C')
 
 # Salvando o PDF
 pdf.output("relatorio_ocorrencias_{}.pdf".format(obter_data()))
-
-
-
